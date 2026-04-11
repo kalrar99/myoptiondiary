@@ -1,0 +1,9 @@
+-e # Environment variables — never commit
+.env
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/

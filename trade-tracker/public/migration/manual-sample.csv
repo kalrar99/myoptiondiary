@@ -1,0 +1,67 @@
+ticker,strategy,status,entry_date,expiration,entry_price,contracts,strike_sell,strike_buy,exit_price,exit_date,pnl,expiration_back,option_type,delta,gamma,theta,vega,iv_entry,notes
+# AAPL wheel: CSP assigned then two covered call cycles
+# Step 1: Sell the CSP - assigned at strike $215
+AAPL,Cash-Secured Put,closed,2025-10-15,2025-11-21,3.20,2,,215,215.00,2025-11-21,,,,,-0.28,0.04,-0.12,0.22,28,CSP assigned at strike - full cycle begins
+# Step 2: Create the lot from assignment (contracts = shares received)
+AAPL,CSP Assignment,,2025-11-21,,215.00,200,,,,,,,,,,,,,AAPL 200 shares received at $215 avg cost
+# Step 3: CC cycle 1 - expired worthless (bought back at $0.05)
+AAPL,Covered Call,closed,2025-11-28,2026-01-16,4.20,2,226,,0.05,2026-01-16,830,,,-0.28,0.04,-0.12,0.22,26,Closed at $0.05 near expiry - kept $830 premium on 2 contracts
+# Step 4: CC cycle 2 - still open
+AAPL,Covered Call,open,2026-03-24,2026-05-01,4.60,2,255,,,,,,,,-0.28,0.03,-0.10,0.20,26,Current CC cycle - OTM entry theta collecting
+END
+NVDA,Cash-Secured Put,closed,2025-10-04,2025-11-14,6.80,1,,160,3.40,2025-11-13,340,,,-0.30,0.03,-0.15,0.35,42,Closed at 50% profit - did not want assignment
+END
+PLTR,Cash-Secured Put,open,2026-03-24,2026-05-08,6.20,1,,145,,,,,,-0.28,0.04,-0.18,0.40,65,Bullish entry on PLTR pullback
+END
+# --- Full wheel: CSP assigned, CC written, CC called away ---
+# Step 1: Sell the put
+TSLA,Cash-Secured Put,closed,2026-01-15,2026-02-21,9.80,1,,310,310.00,2026-02-21,,,,,,,,,CSP assigned at $310
+# Step 2: Create the lot from assignment (contracts = shares received)
+TSLA,CSP Assignment,,2026-02-21,,310.00,100,,,,2026-02-21,,,,,,,,,TSLA 100 shares assigned at $310 — entry_price=avg cost per share
+# Step 3: Write covered calls against the lot
+TSLA,Covered Call,closed,2026-02-25,2026-03-21,9.20,1,320,,0,2026-03-21,920,,,-0.28,,,,,Expired worthless — kept full premium
+TSLA,Covered Call,closed,2026-03-25,2026-04-17,8.40,1,325,,325.00,2026-04-17,,,,,,,,,CC called away at $325
+# Step 4: Record the called away lot close
+TSLA,Called Away,,,,,,,,325.00,2026-04-17,,,,,,,,,TSLA shares called away at $325
+END
+# --- Outright stock purchase then covered calls ---
+ABBV,Stock Purchase,,2026-01-10,,168.50,100,,,,,,,,,,,,, Bought 100 shares outright at $168.50
+ABBV,Covered Call,closed,2026-01-15,2026-02-21,3.50,1,175,,0,2026-02-21,350,,,-0.28,0.03,-0.10,0.18,22,Expired worthless
+ABBV,Covered Call,open,2026-03-03,2026-05-16,3.10,1,178,,,,,,,,-0.28,0.03,-0.09,0.16,22,Current CC cycle
+END
+QQQ,Bull Put Spread,closed,2026-02-21,2026-03-27,2.60,2,468,460,0.52,2026-03-26,416,,,-0.22,0.03,-0.09,0.28,17,Held above spread — closed 80% profit
+SPY,Bull Put Spread,open,2026-03-24,2026-05-08,2.20,2,548,540,,,,,,-0.20,0.02,-0.07,0.22,14,Credit spread below support
+END
+NVDA,Bear Call Spread,closed,2025-11-28,2026-01-02,4.20,1,185,190,0,2026-01-02,420,,,-0.22,0.03,-0.11,0.30,42,Expired worthless during consolidation
+QQQ,Bear Call Spread,open,2026-03-24,2026-05-08,1.80,2,605,610,,,,,,-0.22,0.02,-0.08,0.25,17,Mild hedge — BCS above resistance
+END
+AXSM,Bull Call Spread,open,2026-03-24,2026-05-29,3.20,2,175,165,,,,,, 0.47,0.05,-0.14,0.38,48,Defined risk bullish — buy $165C / sell $175C
+AAPL,Bull Call Spread,closed,2026-02-06,2026-03-20,2.80,1,245,235,4.20,2026-03-18,-140,,, 0.35,0.04,-0.12,0.30,26,Directional missed — closed for loss
+END
+SPY,Bear Put Spread,open,2026-03-24,2026-05-08,2.80,2,620,630,,,,,,-0.32,0.04,-0.13,0.35,14,Portfolio hedge against SPY pullback
+TSLA,Bear Put Spread,closed,2026-02-11,2026-03-13,4.20,2,265,275,2.80,2026-03-10,-280,,,-0.38,0.05,-0.16,0.42,56,TSLA continued higher — closed hedge early
+END
+AAPL,Iron Condor,closed,2026-02-16,2026-03-20,2.40,2,260,235,0.34,2026-03-20,412,,,-0.10,0.02,-0.06,0.18,24,AAPL stayed in range - 85% profit
+SPY,Iron Condor,open,2026-03-24,2026-05-08,3.20,2,685,620,,,,,,-0.10,0.01,-0.05,0.15,18,Range trade - sell call $685 / sell put $620
+END
+NVDA,Iron Butterfly,closed,2026-02-18,2026-03-20,12.80,1,175,165,3.20,2026-03-20,960,,,-0.06,0.01,-0.04,0.12,42,75% profit at $175 body
+SPY,Iron Butterfly,open,2026-03-31,2026-05-15,10.40,1,655,625,,,,,,-0.05,0.01,-0.03,0.10,18,Centered at $655 pinning near ATM
+END
+ABBV,Calendar Spread,closed,2026-01-28,2026-03-06,2.40,1,,,1.10,2026-03-29,,2026-04-03,call,0.08,0.02,-0.05,0.25,22,Front expired — theta captured
+NFLX,Calendar Spread,open,2026-03-24,2026-05-15,4.60,1,,,,,, 2026-06-05,call,0.08,0.02,-0.06,0.30,32,Long vol near-ATM
+END
+INOD,Diagonal Spread,open,2026-03-24,2026-05-01,0.55,2,25,27,,,,2026-06-05,call,-0.04,0.01,-0.02,0.08,90,Short $25C front / long $27C back
+AAPL,Diagonal Spread,closed,2026-02-06,2026-03-20,3.20,1,240,230,1.80,2026-03-18,140,2026-04-17,call,-0.06,0.01,-0.03,0.12,26,Short leg expired — net gain
+END
+NFLX,Long Call,open,2026-03-24,2026-05-22,2.60,1,,100,,,,,,, 0.35,0.04,-0.11,0.28,32,Bullish earnings catalyst
+AXSM,Long Call,closed,2026-02-16,2026-03-20,1.80,2,,160,0,2026-03-20,-360,,,, 0.28,0.03,-0.09,0.22,48,OTM expired worthless — catalyst missed
+END
+NFLX,Long Put,closed,2026-02-21,2026-03-20,9.20,1,,90,18.50,2026-03-20,930,,,,-0.38,0.05,-0.16,0.40,32,Sold off post-earnings - put doubled
+SPY,Long Put,open,2026-03-31,2026-05-08,4.80,2,,615,,,,,,-0.30,0.04,-0.12,0.32,18,Tail risk hedge on portfolio
+END
+CRSP,Long Straddle,closed,2026-02-26,2026-04-03,14.20,1,57,57,6.80,2026-03-28,-740,,, 0.02,0.01,-0.04,0.50,62,FDA delay — IV crushed despite announcement
+CRSP,Long Straddle,open,2026-03-31,2026-05-01,12.80,1,58,58,,,,,,, 0.02,0.01,-0.03,0.48,62,New FDA window — long volatility play
+END
+INOD,Long Strangle,closed,2026-03-03,2026-03-27,2.10,1,24,20,0.40,2026-03-23,-170,,, 0.04,0.01,-0.02,0.15,90,INOD flat - strangle lost to theta
+NVDA,Long Strangle,open,2026-03-31,2026-05-15,20.64,1,185,165,,,,,, 0.03,0.01,-0.02,0.18,42,Binary event - earnings strangle OTM +-6%
+END

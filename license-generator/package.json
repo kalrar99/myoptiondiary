@@ -1,0 +1,9 @@
+{
+  "name": "options-tracker-license-generator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Manual license key generator for Options Tracker v5",
+  "dependencies": {
+    "better-sqlite3": "^9.4.3"
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "name": "myoptiondiary",
+  "version": "5.1.0",
+  "private": true,
+  "description": "MyOptionDiary \u2014 Wheel strategy options trading journal",
+  "author": "MyOptionDiary",
+  "main": "electron/main.js",
+  "dependencies": {
+    "ajv": "^8.11.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "recharts": "^2.10.0",
+    "sql.js": "^1.12.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "cross-env": "^7.0.3",
+    "electron": "28.3.3",
+    "electron-builder": "^24.13.3",
+    "rimraf": "^5.0.0"
+  },
+  "scripts": {
+    "prestart": "node -e \"const fs=require('fs'),path=require('path');const c=path.join(__dirname,'node_modules','.cache');try{fs.rmSync(c,{recursive:true,force:true})}catch(e){}const hmr=path.join(__dirname,'node_modules','webpack','hot','dev-server.js');try{let s=fs.readFileSync(hmr,'utf8');if(s.includes('throw new Error')){s=s.replace(/throw new Error/g,'console.warn//throw new Error');fs.writeFileSync(hmr,s);console.log('HMR patched')}else{console.log('HMR already patched')}}catch(e){console.log('patch skipped:',e.message)}\"",
+    "start": "cross-env WDS_SOCKET_HOST=localhost WDS_SOCKET_PORT=3000 WDS_SOCKET_PATH=/ws react-scripts start",
+    "build": "react-scripts build",
+    "electron:dev": "npm run build && electron .",
+    "electron:pack": "electron-builder --win --x64",
+    "dist": "npm run electron:pack",
+    "react:build": "react-scripts build"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app"
+    ],
+    "rules": {
+      "react-hooks/exhaustive-deps": "off"
+    }
+  },
+  "build": {
+    "appId": "com.myoptiondiary.app",
+    "productName": "MyOptionDiary",
+    "copyright": "MyOptionDiary",
+    "extends": null,
+    "directories": {
+      "output": "../dist"
+    },
+    "files": [
+      "electron/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/sql.js/dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "build",
+        "to": "app",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": ".",
+        "to": "backend",
+        "filter": [
+          "trade-tracker-backend.js",
+          "node_modules/**/*"
+        ]
+      },
+      {
+        "from": "node-bin",
+        "to": "node",
+        "filter": [
+          "node.exe"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MyOptionDiary",
+      "deleteAppDataOnUninstall": false
+    },
+    "nodeGypRebuild": false,
+    "buildDependenciesFromSource": false,
+    "electronVersion": "28.3.3",
+    "npmRebuild": false
+  }
+}

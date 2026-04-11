@@ -1,0 +1,654 @@
+// src/api/trades.js  — Demo Engine (v2)
+//
+// ── ARCHITECTURE NOTE ────────────────────────────────────────────────────────
+// This file is the DEMO ENGINE only.  It is completely self-contained and
+// must never import from, or write to, any live-mode module.  All dates are
+// computed relative to "today" so the demo remains coherent no matter when
+// the app is installed.
+//
+// Live mode data is fetched from the backend API (/api/trades, /api/lots).
+// See trade-tracker-backend.js for the live engine.
+//
+// ── P&L FORMULAS (verified for every closed trade) ───────────────────────────
+//   Credit strategies (CC, CSP, BPS, BCS, IC):
+//     pnl = (entry_price - exit_price) × contracts × 100
+//   Debit strategies (LC, LP):
+//     pnl = (exit_price - entry_price) × contracts × 100
+//
+// ── SPOT PRICES USED FOR BLACK-SCHOLES ESTIMATES ─────────────────────────────
+//   AAPL $224  IV 26-27%     QQQ  $478  IV 17%
+//   TSLA $268 (CSP) / $258 (CC)  IV 55-57%
+//   NVDA $835 (CSP) / $825-935 (CC)  IV 50-55%
+//   AMZN $213 (CSP) / $207 (CC)  IV 29-31%
+//   SPY  $562  IV 14%
+// ─────────────────────────────────────────────────────────────────────────────
+
+function getBase() {
+  if (typeof window === 'undefined') return '';
+  const p = window.location.protocol;
+  return (p === 'app:' || p === 'file:') ? 'http://127.0.0.1:3002' : '';
+}
+
+// ── US MARKET HOLIDAY ENGINE ─────────────────────────────────────────────────
+// Computes Friday market closures dynamically for any year.
+// No hardcoded date lists — works correctly for any installation date.
+//
+// Rules:
+//   Good Friday   → always the Friday 2 days before Easter Sunday
+//   Fixed holidays (Jan 1, Jul 4, Dec 25):
+//     Falls on Saturday → preceding Friday is the market holiday
+//     Falls on Sunday   → following Monday is the holiday (Friday unaffected)
+//     Falls on weekday  → that day is the holiday (not a Friday, so irrelevant)
+
+function easterSunday(year) {
+  // Butcher's algorithm — returns { month (1-12), day }
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day   = ((h + l - 7 * m + 114) % 31) + 1;
+  return { month, day };
+}
+
+function fridayHolidaysForYear(year) {
+  const holidays = new Set();
+
+  // Good Friday — always 2 days before Easter Sunday
+  const { month: em, day: ed } = easterSunday(year);
+  const easter = new Date(year, em - 1, ed);
+  const goodFri = new Date(easter);
+  goodFri.setDate(easter.getDate() - 2);
+  holidays.add(goodFri.toISOString().slice(0, 10));
+
+  // Fixed-date holidays: add to set only when they fall on Saturday
+  // (Saturday-observed → Friday is the market holiday)
+  for (const [month, day] of [[1, 1], [7, 4], [12, 25]]) {
+    const d = new Date(year, month - 1, day);
+    if (d.getDay() === 6) {           // Saturday
+      const fri = new Date(d);
+      fri.setDate(d.getDate() - 1);
+      holidays.add(fri.toISOString().slice(0, 10));
+    }
+    // Sunday → Monday observed; Friday is unaffected — nothing to add
+  }
+
+  return holidays;
+}
+
+// Per-year memoization so we compute at most once per year per session
+const _fridayHolidayCache = {};
+function isMarketHoliday(dateStr) {
+  const year = parseInt(dateStr.slice(0, 4), 10);
+  if (!_fridayHolidayCache[year]) {
+    _fridayHolidayCache[year] = fridayHolidaysForYear(year);
+  }
+  return _fridayHolidayCache[year].has(dateStr);
+}
+
+// ── Date helpers ──────────────────────────────────────────────────────────────
+
+function toISO(d) { return d.toISOString().slice(0, 10); }
+
+// Walk forward to the nearest Friday; shift to Thursday if that Friday is a holiday
+function nearestFriday(d) {
+  const dt = new Date(d);
+  while (dt.getDay() !== 5) dt.setDate(dt.getDate() + 1);
+  if (isMarketHoliday(toISO(dt))) dt.setDate(dt.getDate() - 1);
+  return toISO(dt);
+}
+
+// Walk backward to the most recent past Friday; shift to Thursday if it is a holiday
+function lastFriday(d) {
+  const dt = new Date(d);
+  while (dt.getDay() !== 5) dt.setDate(dt.getDate() - 1);
+  if (isMarketHoliday(toISO(dt))) dt.setDate(dt.getDate() - 1);
+  return toISO(dt);
+}
+
+// Plain calendar offsets — for entry/exit dates (not constrained to Fridays)
+function ago(n)   { const d = new Date(); d.setDate(d.getDate() - n); return toISO(d); }
+function ahead(n) { const d = new Date(); d.setDate(d.getDate() + n); return toISO(d); }
+
+// Option EXPIRY helpers — always land on a Friday (or Thursday if holiday)
+function expiryAhead(n) { const d = new Date(); d.setDate(d.getDate() + n); return nearestFriday(d); }
+function expiryAgo(n)   { const d = new Date(); d.setDate(d.getDate() - n); return lastFriday(d); }
+
+
+// ── MOCK_LOTS ─────────────────────────────────────────────────────────────────
+export const MOCK_LOTS = [
+  // AAPL: core lot + added on dip
+  { id: 1, ticker: 'AAPL', shares: 200, avg_cost: 210.50, purchase_date: ago(120), close_date: null,    close_price: null,   notes: 'Core position' },
+  { id: 2, ticker: 'AAPL', shares: 100, avg_cost: 218.00, purchase_date: ago(60),  close_date: null,    close_price: null,   notes: 'Added on dip' },
+
+  // TSLA: assigned via CSP at $255 strike; $16.50 premium → effective cost $238.50
+  { id: 3, ticker: 'TSLA', shares: 100, avg_cost: 255.00, purchase_date: ago(90),  close_date: null,    close_price: null,   notes: 'Assigned via CSP — effective cost $238.50' },
+
+  // NVDA: full wheel cycle — assigned at $800, called away at $960
+  { id: 4, ticker: 'NVDA', shares: 100, avg_cost: 800.00, purchase_date: ago(150), close_date: ago(10), close_price: 960.00, notes: 'Called away at $960 — full wheel cycle complete' },
+
+  // QQQ: two lots
+  { id: 5, ticker: 'QQQ',  shares: 100, avg_cost: 465.00, purchase_date: ago(80),  close_date: null,    close_price: null,   notes: '' },
+  { id: 6, ticker: 'QQQ',  shares: 100, avg_cost: 472.00, purchase_date: ago(35),  close_date: null,    close_price: null,   notes: '' },
+
+  // AMZN: assigned via CSP at $205 strike; $6.00 premium → effective cost $199.00
+  { id: 7, ticker: 'AMZN', shares: 100, avg_cost: 205.00, purchase_date: ago(30),  close_date: null,    close_price: null,   notes: 'Assigned via CSP — effective cost $199.00' },
+
+  // SPY: core ETF position
+  { id: 8, ticker: 'SPY',  shares: 200, avg_cost: 548.00, purchase_date: ago(65),  close_date: null,    close_price: null,   notes: 'ETF core position' },
+];
+
+
+// ── MOCK_TRADES ───────────────────────────────────────────────────────────────
+export const MOCK_TRADES = [
+
+  // ════════════════════════════════════════════════════
+  // AAPL — Covered Calls on two lots
+  // ════════════════════════════════════════════════════
+
+  // id=1  CLOSED — expired worthless (perfect outcome)
+  // BS: spot $224, strike $230, 45 DTE, IV 26% → $6.18.  Use $4.50 (realistic after spread)
+  // P&L: (4.50 − 0.05) × 2 × 100 = $890 ✓
+  {
+    id: 1, ticker: 'AAPL', lot_id: 1, strategy: 'Covered Call',
+    status: 'closed',
+    entry_date:  ago(45),
+    exit_date:   expiryAgo(16),     // expired worthless on expiry date
+    expiration:  expiryAgo(16),
+    entry_price: 4.50, exit_price: 0.05, contracts: 2,
+    strike_buy: null, strike_sell: 230,
+    delta: -0.30, gamma: 0.04, theta: -0.10, vega: 0.21, iv_entry: 26,
+    pnl: 890, notes: 'Expired OTM — full $890 premium kept',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=2  OPEN — 28 DTE, healthy (green)
+  // BS: spot $224, strike $232, 45 DTE, IV 26% → $5.43.  Use $5.50
+  {
+    id: 2, ticker: 'AAPL', lot_id: 1, strategy: 'Covered Call',
+    status: 'open',
+    entry_date:  ago(17),
+    exit_date:   null,
+    expiration:  expiryAhead(28),
+    entry_price: 5.50, exit_price: null, contracts: 2,
+    strike_buy: null, strike_sell: 232,
+    delta: -0.33, gamma: 0.04, theta: -0.11, vega: 0.22, iv_entry: 26,
+    pnl: null, notes: '',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=3  OPEN — 14 DTE, AMBER alert (approaching expiry, stock moved up)
+  // BS: spot $222 at entry, strike $226, 45 DTE, IV 26% → $5.58.  Use $4.60
+  // Now 14 DTE: stock at $224, delta elevated to 0.44
+  {
+    id: 3, ticker: 'AAPL', lot_id: 2, strategy: 'Covered Call',
+    status: 'open',
+    entry_date:  ago(31),
+    exit_date:   null,
+    expiration:  expiryAhead(14),
+    entry_price: 4.60, exit_price: null, contracts: 1,
+    strike_buy: null, strike_sell: 226,
+    delta: -0.44, gamma: 0.06, theta: -0.14, vega: 0.18, iv_entry: 26,
+    pnl: null, notes: 'Stock moved up — 14 DTE, $2 buffer. Consider rolling.',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+
+  // ════════════════════════════════════════════════════
+  // TSLA Wheel — CSP → CC → CC (active)
+  // ════════════════════════════════════════════════════
+
+  // id=4  CLOSED — CSP assignment
+  // BS: spot $268, strike $255 (4.8% OTM), 60 DTE, IV 55% → $16.30.  Use $16.50
+  // TSLA fell to $248 at expiry → assigned.  Exit recorded on expiry date.
+  // P&L: (16.50 − 7.00) × 1 × 100 = $950 ✓  |  Effective cost: $255 − $16.50 = $238.50
+  {
+    id: 4, ticker: 'TSLA', lot_id: 3, strategy: 'Cash-Secured Put',
+    status: 'closed',
+    entry_date:  ago(90),
+    exit_date:   expiryAgo(60),     // assignment processed on expiry date
+    expiration:  expiryAgo(60),
+    entry_price: 16.50, exit_price: 7.00, contracts: 1,
+    strike_buy: 255, strike_sell: null,
+    delta: -0.34, gamma: 0.03, theta: -0.19, vega: 0.48, iv_entry: 55,
+    pnl: 950, notes: 'Assigned at $255 — effective cost $238.50 after $16.50 premium',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=5  CLOSED — CC expired worthless (Wheel Phase 2, Month 1)
+  // BS: spot $258 post-assignment, strike $270 (4.7% OTM), 30 DTE, IV 55% → $11.21.  Use $11.50
+  // P&L: (11.50 − 0.20) × 1 × 100 = $1,130 ✓
+  {
+    id: 5, ticker: 'TSLA', lot_id: 3, strategy: 'Covered Call',
+    status: 'closed',
+    entry_date:  ago(58),
+    exit_date:   expiryAgo(28),
+    expiration:  expiryAgo(28),
+    entry_price: 11.50, exit_price: 0.20, contracts: 1,
+    strike_buy: null, strike_sell: 270,
+    delta: -0.29, gamma: 0.03, theta: -0.18, vega: 0.44, iv_entry: 55,
+    pnl: 1130, notes: 'Expired OTM — cost basis now $227.00',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=6  OPEN — CC, 6 DTE, RED ALERT (delta 0.46, TSLA only $3 below strike)
+  // BS: spot $248 at entry, strike $260 (4.8% OTM), 45 DTE, IV 55% → $14.75.  Use $15.00
+  // TSLA rallied to $257 since entry — only $3 below $260 strike with 6 DTE left.
+  {
+    id: 6, ticker: 'TSLA', lot_id: 3, strategy: 'Covered Call',
+    status: 'open',
+    entry_date:  ago(39),
+    exit_date:   null,
+    expiration:  expiryAhead(6),
+    entry_price: 15.00, exit_price: null, contracts: 1,
+    strike_buy: null, strike_sell: 260,
+    delta: -0.46, gamma: 0.08, theta: -0.26, vega: 0.42, iv_entry: 55,
+    pnl: null, notes: 'TSLA rallied to $257 — only $3 below $260 strike with 6 DTE. Roll or close today.',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+
+  // ════════════════════════════════════════════════════
+  // NVDA Full Wheel Cycle (all closed)
+  // ════════════════════════════════════════════════════
+
+  // id=7  CLOSED — CSP assignment
+  // BS: spot $835, strike $800 (4.2% OTM), 45 DTE, IV 50% → $39.13.  Use $39.00
+  // NVDA fell to $788 → assigned.  P&L: (39.00 − 14.00) × 1 × 100 = $2,500 ✓
+  // Effective cost: $800 − $39.00 = $761.00
+  {
+    id: 7, ticker: 'NVDA', lot_id: 4, strategy: 'Cash-Secured Put',
+    status: 'closed',
+    entry_date:  ago(150),
+    exit_date:   expiryAgo(120),
+    expiration:  expiryAgo(120),
+    entry_price: 39.00, exit_price: 14.00, contracts: 1,
+    strike_buy: 800, strike_sell: null,
+    delta: -0.28, gamma: 0.02, theta: -0.22, vega: 0.58, iv_entry: 50,
+    pnl: 2500, notes: 'Assigned at $800 — effective cost $761.00 after $39 premium',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=8  CLOSED — CC #1, expired worthless
+  // BS: spot $825, strike $860 (4.2% OTM), 30 DTE, IV 50% → $34.01.  Use $34.00
+  // P&L: (34.00 − 0.40) × 1 × 100 = $3,360 ✓
+  {
+    id: 8, ticker: 'NVDA', lot_id: 4, strategy: 'Covered Call',
+    status: 'closed',
+    entry_date:  ago(118),
+    exit_date:   expiryAgo(88),
+    expiration:  expiryAgo(88),
+    entry_price: 34.00, exit_price: 0.40, contracts: 1,
+    strike_buy: null, strike_sell: 860,
+    delta: -0.27, gamma: 0.02, theta: -0.25, vega: 0.62, iv_entry: 50,
+    pnl: 3360, notes: 'Expired OTM — cost basis now $727.00',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=9  CLOSED — CC #2, expired worthless
+  // BS: spot $878, strike $920 (4.8% OTM), 30 DTE, IV 52% → $36.43.  Use $36.50
+  // P&L: (36.50 − 0.50) × 1 × 100 = $3,600 ✓
+  {
+    id: 9, ticker: 'NVDA', lot_id: 4, strategy: 'Covered Call',
+    status: 'closed',
+    entry_date:  ago(86),
+    exit_date:   expiryAgo(56),
+    expiration:  expiryAgo(56),
+    entry_price: 36.50, exit_price: 0.50, contracts: 1,
+    strike_buy: null, strike_sell: 920,
+    delta: -0.25, gamma: 0.02, theta: -0.28, vega: 0.66, iv_entry: 52,
+    pnl: 3600, notes: 'Expired OTM — cost basis now $690.50',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=10  CLOSED — CC #3, called away at $960
+  // BS: spot $935, strike $960 (2.7% OTM), 30 DTE, IV 55% → $49.57.  Use $49.50
+  // P&L: (49.50 − 1.50) × 1 × 100 = $4,800 ✓
+  // Share gain: ($960 − $800) × 100 = $16,000
+  // Cycle total: $2,500 + $3,360 + $3,600 + $4,800 + $16,000 = $30,260
+  {
+    id: 10, ticker: 'NVDA', lot_id: 4, strategy: 'Covered Call',
+    status: 'closed',
+    entry_date:  ago(40),
+    exit_date:   expiryAgo(10),
+    expiration:  expiryAgo(10),
+    entry_price: 49.50, exit_price: 1.50, contracts: 1,
+    strike_buy: null, strike_sell: 960,
+    delta: -0.28, gamma: 0.02, theta: -0.30, vega: 0.74, iv_entry: 55,
+    pnl: 4800, notes: 'Called away at $960. Options P&L: +$14,260. Share gain: +$16,000. Cycle total: +$30,260.',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+
+  // ════════════════════════════════════════════════════
+  // QQQ — Bull Put Spread + Covered Calls
+  // ════════════════════════════════════════════════════
+
+  // id=11  CLOSED — Bull Put Spread, closed near max profit
+  // FIX: lot_id was 5 — BPS is a pure options spread, stock ownership not required → null
+  // BS: spot $478, short $468 (2.1% OTM), long $458, 35 DTE, IV 17%
+  //   short: $4.93, long: $2.43, net credit: $2.50
+  // P&L: (2.50 − 0.20) × 2 × 100 = $460 ✓
+  {
+    id: 11, ticker: 'QQQ', lot_id: null, strategy: 'Bull Put Spread',
+    status: 'closed',
+    entry_date:  ago(35),
+    exit_date:   ago(8),
+    expiration:  expiryAgo(8),
+    entry_price: 2.50, exit_price: 0.20, contracts: 2,
+    strike_buy: 458, strike_sell: 468,
+    delta: -0.22, gamma: 0.03, theta: -0.08, vega: 0.14, iv_entry: 17,
+    pnl: 460, notes: 'QQQ held above $468 — closed at 92% of max profit',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=12  OPEN — CC on lot 5, 38 DTE (blue — past 50% max profit)
+  // BS: spot $478, strike $490 (2.5% OTM), 45 DTE, IV 17% → $7.61.  Use $7.60
+  {
+    id: 12, ticker: 'QQQ', lot_id: 5, strategy: 'Covered Call',
+    status: 'open',
+    entry_date:  ago(7),
+    exit_date:   null,
+    expiration:  expiryAhead(38),
+    entry_price: 7.60, exit_price: null, contracts: 1,
+    strike_buy: null, strike_sell: 490,
+    delta: -0.29, gamma: 0.03, theta: -0.09, vega: 0.26, iv_entry: 17,
+    pnl: null, notes: '',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=13  OPEN — CC on lot 6, 45 DTE fresh entry (green)
+  // BS: spot $478, strike $488 (2.1% OTM), 45 DTE, IV 17% → $8.37.  Use $8.40
+  {
+    id: 13, ticker: 'QQQ', lot_id: 6, strategy: 'Covered Call',
+    status: 'open',
+    entry_date:  ago(2),
+    exit_date:   null,
+    expiration:  expiryAhead(45),
+    entry_price: 8.40, exit_price: null, contracts: 1,
+    strike_buy: null, strike_sell: 488,
+    delta: -0.32, gamma: 0.03, theta: -0.09, vega: 0.27, iv_entry: 17,
+    pnl: null, notes: 'Fresh entry — 45 DTE optimal theta zone',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+
+  // ════════════════════════════════════════════════════
+  // AMZN Wheel — CSP assigned → CC recovery
+  // ════════════════════════════════════════════════════
+
+  // id=14  CLOSED — CSP assignment (adverse: assigned below effective break-even)
+  // BS: spot $213, strike $205 (3.8% OTM), 65 DTE, IV 29% → $5.95.  Use $6.00
+  // AMZN fell to $196 → assigned.  P&L: (6.00 − 9.00) × 1 × 100 = −$300 ✓
+  // Effective cost: $205 − $6.00 = $199.00
+  {
+    id: 14, ticker: 'AMZN', lot_id: 7, strategy: 'Cash-Secured Put',
+    status: 'closed',
+    entry_date:  ago(70),
+    exit_date:   expiryAgo(30),
+    expiration:  expiryAgo(30),
+    entry_price: 6.00, exit_price: 9.00, contracts: 1,
+    strike_buy: 205, strike_sell: null,
+    delta: -0.27, gamma: 0.04, theta: -0.13, vega: 0.34, iv_entry: 29,
+    pnl: -300, notes: 'Assigned at $205 — effective cost $199.00 after $6 premium',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=15  OPEN — CC recovery, 28 DTE
+  // BS: spot $207 (AMZN recovered), strike $210 (1.4% OTM), 45 DTE, IV 29% → $7.65.  Use $7.60
+  // Strike $210 > $199 effective cost → called away is profitable
+  {
+    id: 15, ticker: 'AMZN', lot_id: 7, strategy: 'Covered Call',
+    status: 'open',
+    entry_date:  ago(17),
+    exit_date:   null,
+    expiration:  expiryAhead(28),
+    entry_price: 7.60, exit_price: null, contracts: 1,
+    strike_buy: null, strike_sell: 210,
+    delta: -0.44, gamma: 0.05, theta: -0.13, vega: 0.30, iv_entry: 29,
+    pnl: null, notes: 'CC above $199 effective cost — assignment = profit',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+
+  // ════════════════════════════════════════════════════
+  // SPY — Iron Condor + Covered Calls
+  // ════════════════════════════════════════════════════
+
+  // id=16  CLOSED — Iron Condor, 3 contracts (pure spread — lot_id: null correct)
+  // BS: spot $562, short $540P/long $530P + short $585C/long $595C, 45 DTE, IV 14%
+  //   put spread: 1.34, call spread: 1.89, net: 3.23.  Use $3.25
+  // P&L: (3.25 − 0.35) × 3 × 100 = $870 ✓
+  {
+    id: 16, ticker: 'SPY', lot_id: null, strategy: 'Iron Condor',
+    status: 'closed',
+    entry_date:  ago(45),
+    exit_date:   ago(10),
+    expiration:  expiryAgo(10),
+    entry_price: 3.25, exit_price: 0.35, contracts: 3,
+    strike_buy: 530, strike_sell: 540,
+    delta: -0.13, gamma: 0.02, theta: -0.08, vega: 0.16, iv_entry: 14,
+    pnl: 870, notes: 'SPY stayed between $540–$585 — closed at 89% of max profit',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=17  OPEN — CC on lot 8, 38 DTE
+  // BS: spot $562, strike $578 (2.8% OTM), 38 DTE, IV 14% → $5.08.  Use $5.10
+  {
+    id: 17, ticker: 'SPY', lot_id: 8, strategy: 'Covered Call',
+    status: 'open',
+    entry_date:  ago(7),
+    exit_date:   null,
+    expiration:  expiryAhead(38),
+    entry_price: 5.10, exit_price: null, contracts: 2,
+    strike_buy: null, strike_sell: 578,
+    delta: -0.24, gamma: 0.03, theta: -0.07, vega: 0.18, iv_entry: 14,
+    pnl: null, notes: '',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+
+  // ════════════════════════════════════════════════════
+  // AAPL — Bear Call Spread (closed)
+  // ════════════════════════════════════════════════════
+
+  // id=18  CLOSED — Bear Call Spread
+  // FIX: lot_id was 1 — BCS is a pure options spread, no stock ownership required → null
+  // BS: spot $224, short $232 (3.6% OTM), long $238, 28 DTE, IV 26%
+  //   short: $3.60, long: $2.05, net credit: $1.55.  Use $1.60
+  // P&L: (1.60 − 0.05) × 2 × 100 = $310 ✓
+  {
+    id: 18, ticker: 'AAPL', lot_id: null, strategy: 'Bear Call Spread',
+    status: 'closed',
+    entry_date:  ago(28),
+    exit_date:   ago(6),
+    expiration:  expiryAgo(6),
+    entry_price: 1.60, exit_price: 0.05, contracts: 2,
+    strike_buy: 238, strike_sell: 232,
+    delta: -0.17, gamma: 0.03, theta: -0.06, vega: 0.14, iv_entry: 26,
+    pnl: 310, notes: 'AAPL stayed below $232 — full spread profit',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+
+  // ════════════════════════════════════════════════════
+  // TSLA — Long Call (closed with loss — educational)
+  // ════════════════════════════════════════════════════
+
+  // id=19  CLOSED — Long Call, directional bet that failed
+  // FIX: expiration was expiryAgo(0) — placed expiry ~2 days ago while exit was 20 days ago.
+  //      Trade story: entered 50 days ago at 35 DTE → scheduled expiry = ago(50)+35d = ago(15).
+  //      Closed early ago(20) with ~10 DTE remaining → expiry correctly expiryAgo(10).
+  //      exit_date ago(20) < expiration expiryAgo(10) ✓ (early exit before expiry).
+  // BS: spot $268, strike $275 (2.6% OTM), 35 DTE, IV 62% → $18.03.  Paid ask $14.00
+  // TSLA fell to $255 with 10 DTE remaining.  Sold at bid $5.50.
+  // P&L (debit strategy): (5.50 − 14.00) × 1 × 100 = −$850 ✓
+  {
+    id: 19, ticker: 'TSLA', lot_id: null, strategy: 'Long Call',
+    status: 'closed',
+    entry_date:  ago(50),
+    exit_date:   ago(20),           // closed early; ~10 DTE remained
+    expiration:  expiryAgo(10),     // FIX: was expiryAgo(0)
+    entry_price: 14.00, exit_price: 5.50, contracts: 1,
+    strike_buy: 275, strike_sell: null,
+    delta: 0.38, gamma: 0.03, theta: -0.22, vega: 0.56, iv_entry: 62,
+    pnl: -850, notes: 'TSLA fell from $268 to $255 — closed early to limit loss',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+
+  // ════════════════════════════════════════════════════
+  // NVDA — New Open CSP (fresh position, no lot yet)
+  // ════════════════════════════════════════════════════
+
+  // id=20  OPEN — CSP, 35 DTE
+  // BS: spot $875, strike $840 (4.0% OTM), 35 DTE, IV 50% → $35.45.  Use $35.50
+  {
+    id: 20, ticker: 'NVDA', lot_id: null, strategy: 'Cash-Secured Put',
+    status: 'open',
+    entry_date:  ago(10),
+    exit_date:   null,
+    expiration:  expiryAhead(35),
+    entry_price: 35.50, exit_price: null, contracts: 1,
+    strike_buy: 840, strike_sell: null,
+    delta: -0.27, gamma: 0.02, theta: -0.22, vega: 0.62, iv_entry: 50,
+    pnl: null, notes: 'New CSP — 35 DTE, NVDA $875, effective cost if assigned: $804.50',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+
+  // ════════════════════════════════════════════════════
+  // AAPL — Roll Chain  (original CC → R1)
+  // ════════════════════════════════════════════════════
+
+  // id=21  CLOSED — original CC, rolled before expiry
+  // FIX: expiration was expiryAgo(18) which is impossible given the entry.
+  //      Entry ago(55) at 45 DTE → scheduled expiry = ago(55)+45d = ago(10) → expiryAgo(10).
+  //      Roll executed ago(35) with ~18 DTE remaining on the original contract.
+  //      exit_date ago(35) < expiration expiryAgo(10) ✓ (exit before expiry = valid roll).
+  // BS: spot $218 at entry, strike $222 (1.8% OTM), 45 DTE, IV 26% → $6.77.  Use $4.40
+  // Stock rallied to $221 at 18 DTE.  Buyback: $3.80.  Net roll credit: $160.
+  // P&L: (4.40 − 3.80) × 2 × 100 = $120 ✓
+  {
+    id: 21, ticker: 'AAPL', lot_id: 1, strategy: 'Covered Call',
+    status: 'closed',
+    entry_date:  ago(55),
+    exit_date:   ago(35),           // rolled here; exit is before expiry ✓
+    expiration:  expiryAgo(10),     // FIX: was expiryAgo(18) — corrected to match 45-DTE entry
+    entry_price: 4.40, exit_price: 3.80, contracts: 2,
+    strike_buy: null, strike_sell: 222,
+    delta: -0.32, gamma: 0.04, theta: -0.10, vega: 0.20, iv_entry: 26,
+    pnl: 120, notes: 'Rolled at 18 DTE — AAPL at $221, too close to $222 strike. Net roll credit: +$160.',
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=22  OPEN — R1 after roll, 21 DTE remaining
+  // BS: spot $221, strike $224 (1.4% OTM), 38 DTE from roll date, IV 27% → $6.86.  Use $4.60
+  {
+    id: 22, ticker: 'AAPL', lot_id: 1, strategy: 'Covered Call',
+    status: 'open',
+    entry_date:  ago(35),
+    exit_date:   null,
+    expiration:  expiryAhead(21),
+    entry_price: 4.60, exit_price: null, contracts: 2,
+    strike_buy: null, strike_sell: 224,
+    delta: -0.40, gamma: 0.05, theta: -0.11, vega: 0.21, iv_entry: 27,
+    pnl: null, notes: 'Rolled up $2 to $224, net roll credit $160. Watch delta.',
+    roll_parent_id: 21, roll_count: 1,
+  },
+
+
+  // ════════════════════════════════════════════════════
+  // SPY — Iron Condor Chain (IC chain management demo)
+  // ════════════════════════════════════════════════════
+
+  // id=30  OPEN — full IC at original entry
+  // BS: spot $555, short $538P/long $528P + short $574C/long $584C, 45 DTE, IV 14%
+  //   put spread: $1.76, call spread: $2.26, total: $4.02.  Use $4.00
+  {
+    id: 30, ticker: 'SPY', lot_id: null, strategy: 'Iron Condor',
+    status: 'open',
+    entry_date:  ago(30),
+    exit_date:   null,
+    expiration:  expiryAhead(28),
+    entry_price: 4.00, exit_price: null, contracts: 5,
+    contracts_original: 5, contracts_open: 5, contracts_closed: 0, partial_close_pnl: 0,
+    strike_buy: 528, strike_sell: 538,
+    delta: -0.11, gamma: 0.02, theta: -0.07, vega: 0.15, iv_entry: 14,
+    pnl: null, notes: 'IC: short $538P/$574C, long $528P/$584C. SPY was $555 at entry.',
+    condor_chain_id: 30, condor_leg: 'full', condor_seq: 0,
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=31  CLOSED — put spread leg closed early (SPY rallied; puts nearly worthless)
+  // NOTE: This is a leg closure within an active chain, not a full position close.
+  //       The expiration matches the live condor (expiryAhead(28)) because all legs of
+  //       this IC share one expiry cycle.  exit_date ago(18) < expiration expiryAhead(28) ✓.
+  //       The app must not flag "closed trade with future expiry" for IC leg records
+  //       that share a condor_chain_id with an open parent — they are partial closes.
+  // Original put credit: $1.76/spread.  Closed for $0.40.
+  // P&L: (1.76 − 0.40) × 5 × 100 = $680 ✓
+  {
+    id: 31, ticker: 'SPY', lot_id: null, strategy: 'Iron Condor',
+    status: 'closed',
+    entry_date:  ago(30),
+    exit_date:   ago(18),           // closed early; exit < expiry ✓
+    expiration:  expiryAhead(28),   // same expiry cycle as the parent condor chain
+    entry_price: 1.76, exit_price: 0.40, contracts: 5,
+    contracts_original: 5, contracts_open: 0, contracts_closed: 5, partial_close_pnl: 0,
+    strike_buy: 528, strike_sell: 538,
+    delta: null, gamma: null, theta: null, vega: null, iv_entry: null,
+    pnl: 680, notes: 'Put spread closed — SPY rallied to $562, puts worth almost nothing.',
+    condor_chain_id: 30, condor_leg: 'put', condor_seq: 0,
+    roll_parent_id: null, roll_count: 0,
+  },
+
+  // id=32  OPEN — new put spread (rolled up after SPY rally)
+  // BS: spot $562, short $550P/long $540P, 18 DTE remaining in cycle, IV 14%
+  //   short: $2.16, long: $0.67, net: $1.49.  Use $1.50
+  // Chain running credit: ($4.00 × 500) + $680 + ($1.50 × 500) = $3,430
+  {
+    id: 32, ticker: 'SPY', lot_id: null, strategy: 'Iron Condor',
+    status: 'open',
+    entry_date:  ago(18),
+    exit_date:   null,
+    expiration:  expiryAhead(28),
+    entry_price: 1.50, exit_price: null, contracts: 5,
+    contracts_original: 5, contracts_open: 5, contracts_closed: 0, partial_close_pnl: 0,
+    strike_buy: 540, strike_sell: 550,
+    delta: -0.20, gamma: 0.03, theta: -0.07, vega: 0.12, iv_entry: 14,
+    pnl: null, notes: 'Put spread rolled up to $550/$540 after SPY rally. Chain running credit: $3,430.',
+    condor_chain_id: 30, condor_leg: 'put', condor_seq: 1,
+    roll_parent_id: null, roll_count: 0,
+  },
+];
+
+
+// ── Demo stats summary ────────────────────────────────────────────────────────
+export function getMockStats() {
+  const closed   = MOCK_TRADES.filter(t => t.status === 'closed' && t.pnl != null);
+  const wins     = closed.filter(t => t.pnl > 0);
+  const losses   = closed.filter(t => t.pnl < 0);
+  const total    = closed.reduce((s, t) => s + t.pnl, 0);
+  const winRate  = closed.length ? (wins.length / closed.length * 100) : 0;
+  const avgWin   = wins.length   ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+  const avgLoss  = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+  const pf       = avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : (avgWin > 0 ? 99 : 0);
+  return {
+    totalPnl:     total,
+    openTrades:   MOCK_TRADES.filter(t => t.status === 'open').length,
+    closedTrades: closed.length,
+    winRate, avgWin, avgLoss,
+    profitFactor: Math.round(pf * 100) / 100,
+    bestTrade:    closed.length ? Math.max(...closed.map(t => t.pnl)) : 0,
+    worstTrade:   closed.length ? Math.min(...closed.map(t => t.pnl)) : 0,
+  };
+}

@@ -1,0 +1,41 @@
+Date,Type,Sub Type,Symbol,Average Price,Quantity,Value,Description
+2026-01-06,Trade,Sell to Open,AAPL 2/20/26 P220,3.45,-2,-690.00,Sell 2 AAPL CSP
+2026-02-20,Receive Deliver,Assignment,AAPL 2/20/26 P220,0,2,0.00,AAPL CSP Assigned
+2026-02-20,Receive Deliver,Buy to Open,AAPL,220.00,200,44000.00,AAPL Shares Received
+END
+2026-03-03,Trade,Sell to Open,AAPL 4/17/26 C215,3.80,-2,-760.00,Sell 2 AAPL CC
+2026-03-21,Trade,Buy to Close,AAPL 4/17/26 C215,1.90,2,380.00,Buy back AAPL CC
+2026-03-25,Trade,Sell to Open,AAPL 5/16/26 C220,5.10,-2,-1020.00,Sell 2 AAPL CC
+2026-05-16,Receive Deliver,Assignment,AAPL 5/16/26 C220,0,2,0.00,AAPL CC Called Away
+2026-05-16,Receive Deliver,Sell to Close,AAPL,220.00,-200,-44000.00,AAPL Shares Delivered
+END
+2026-02-03,Trade,Sell to Open,NVDA 2/27/26 P125,4.80,-2,-960.00,Sell 2 NVDA CSP
+2026-02-27,Receive Deliver,Expiration,NVDA 2/27/26 P125,0,2,0.00,NVDA CSP Expired Worthless
+END
+2026-03-02,Trade,Sell to Open,MSFT 3/21/26 P395,4.50,-1,-450.00,Sell 1 MSFT CSP
+2026-03-10,Trade,Buy to Close,MSFT 3/21/26 P395,2.25,1,225.00,Buy back MSFT CSP early
+END
+2026-02-01,Receive Deliver,Buy to Open,TSLA,310.00,100,31000.00,Buy 100 TSLA shares
+2026-02-10,Trade,Sell to Open,TSLA 3/21/26 C320,9.20,-1,-920.00,Sell 1 TSLA CC
+2026-03-21,Receive Deliver,Expiration,TSLA 3/21/26 C320,0,1,0.00,TSLA CC Expired Worthless
+2026-03-25,Trade,Sell to Open,TSLA 4/17/26 C325,8.40,-1,-840.00,Sell 1 TSLA CC
+2026-04-17,Receive Deliver,Assignment,TSLA 4/17/26 C325,0,1,0.00,TSLA CC Called Away
+2026-04-17,Receive Deliver,Sell to Close,TSLA,325.00,-100,-32500.00,TSLA Shares Delivered
+END
+2026-03-10,Trade,Buy to Open,META 4/17/26 C680,12.30,1,1230.00,Buy 1 META Long Call
+2026-04-04,Trade,Sell to Close,META 4/17/26 C680,6.80,-1,-680.00,Sell META Long Call
+END
+2026-03-31,Trade,Buy to Open,AMZN 5/16/26 P200,9.60,1,960.00,Buy 1 AMZN Long Put
+2026-04-25,Receive Deliver,Expiration,AMZN 5/16/26 P200,0,1,0.00,AMZN Long Put Expired
+END
+2026-03-15,Receive Deliver,Buy to Open,NVDA,112.50,100,11250.00,Buy 100 NVDA shares
+2026-03-20,Trade,Sell to Open,NVDA 5/16/26 C115,3.20,-1,-320.00,Sell 1 NVDA CC open
+END
+2026-03-20,Trade,Sell to Open,SPY 6/20/26 P510,4.15,-2,-830.00,Sell 2 SPY CSP open
+END
+2026-04-01,Trade,Sell to Open,AAPL 6/20/26 P195,2.85,-1,-285.00,Sell 1 AAPL CSP open
+END
+2026-01-15,Money Movement,Credit,,,,,Monthly interest credit
+2026-03-01,Money Movement,Credit,,,,,Dividend credit AAPL
+2026-03-15,Money Movement,Deposit,,,,,ACH deposit
+2026-03-31,Money Movement,Debit,,,,,Monthly platform fee
